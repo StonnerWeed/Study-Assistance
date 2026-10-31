@@ -1,8 +1,11 @@
 import io
 import re
 import random
+import urllib.parse
+import json
+import urllib.request
 import streamlit as st
-from deep_translator import GoogleTranslator
+from deep_translator import GoogleTranslator, MyMemoryTranslator
 from gtts import gTTS
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
@@ -42,6 +45,7 @@ st.markdown("""
         margin-bottom: 16px;
         line-height: 1.6;
         font-size: 16px;
+        color: #1e293b;
     }
     .quiz-card {
         background-color: #f1f5f9;
@@ -49,6 +53,7 @@ st.markdown("""
         border-radius: 10px;
         margin-bottom: 10px;
         border: 1px solid #e2e8f0;
+        color: #1e293b;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -69,9 +74,51 @@ def load_model():
 
 tokenizer, model = load_model()
 
+# ---------------- MULTI-FALLBACK TRANSLATOR ----------------
+@st.cache_data(show_spinner=False)
+def robust_translate(text, target_lang):
+    """
+    3-Layer Fallback Translation taaki Streamlit Cloud par kabhi 'Too Many Requests' na aaye:
+    1. Google GTX API endpoint (Direct lightweight endpoint - rarely blocked)
+    2. deep_translator GoogleTranslator
+    3. deep_translator MyMemoryTranslator
+    """
+    if target_lang == "en" or not text.strip():
+        return text
+
+    # Method 1: Direct Google GTX API (Bypasses standard web scraper blocks)
+    try:
+         encoded_text = urllib.parse.quote(text)
+         url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl={target_lang}&dt=t&q={encoded_text}"
+         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+         with urllib.request.urlopen(req, timeout=8) as response:
+             data = json.loads(response.read().decode('utf-8'))
+             translated = "".join([sentence[0] for sentence in data[0] if sentence[0]])
+             if translated:
+                 return translated
+    except Exception:
+        pass
+
+    # Method 2: deep_translator GoogleTranslator
+    try:
+        return GoogleTranslator(source='auto', target=target_lang).translate(text)
+    except Exception:
+        pass
+
+    # Method 3: MyMemory Translator Fallback
+    lang_map = {
+        "hi": "hi-IN",
+        "mr": "mr-IN",
+        "ta": "ta-IN",
+        "te": "te-IN",
+        "bn": "bn-IN",
+        "gu": "gu-IN"
+    }
+    mm_target = lang_map.get(target_lang, target_lang)
+    return MyMemoryTranslator(source='en-GB', target=mm_target).translate(text)
+
 # ---------------- HELPER FUNCTIONS ----------------
 def chunk_text(text, max_words=280):
-    """Bade chapters ko chhote parts me todne ke liye taaki T5 truncate na kare"""
     words = text.split()
     chunks = []
     for i in range(0, len(words), max_words):
@@ -105,7 +152,6 @@ def summarize_long_text(text, summary_length="Medium"):
             early_stopping=True
         )
         part = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
-        # Capitalize first letter properly
         part = ". ".join([s.strip().capitalize() for s in part.split(".") if s.strip()])
         summaries.append(part + ".")
         
@@ -113,22 +159,20 @@ def summarize_long_text(text, summary_length="Medium"):
 
 def convert_to_hinglish(english_text):
     """English -> Hindi -> Clean Hinglish (Roman Hindi)"""
-    hindi_text = GoogleTranslator(source='auto', target='hi').translate(english_text)
+    hindi_text = robust_translate(english_text, 'hi')
     if HAS_INDIC:
         raw_roman = transliterate(hindi_text, sanscript.DEVANAGARI, sanscript.ITRANS)
-        # Clean up ITRANS uppercase markers into readable everyday Hinglish
         replacements = {
             "A": "aa", "I": "ee", "U": "oo", "M": "n", ".n": "n",
             ".N": "n", "Ch": "chh", "shh": "sh", "~N": "n", "RRi": "ri"
         }
         for k, v in replacements.items():
             raw_roman = raw_roman.replace(k, v)
-        return raw_roman.capitalize()
+        return raw_roman.capitalize(), hindi_text
     else:
-        return hindi_text
+        return hindi_text, hindi_text
 
 def generate_quiz_questions(english_summary):
-    """Summary se automatic fill-in-the-blank questions banana"""
     sentences = [s.strip() for s in english_summary.split(".") if len(s.strip()) > 25]
     quizzes = []
     
@@ -171,13 +215,12 @@ with st.sidebar:
     slow_audio = st.checkbox("🐢 Slow Audio Speed (For easy listening)", value=False)
     
     st.divider()
-    st.caption("💡 **Tip:** Agar test karne ke liye text nahi hai, toh 'Load Sample Topic' button use karo.")
+    st.caption("💡 **Tip:** Agar test karne ke liye text nahi hai, toh 'Load Sample Science Note' button use karo.")
 
 # ---------------- MAIN HEADER ----------------
 st.title("🎓 Vernacular Study Assistant")
 st.write("Complex English chapters ya notes paste karo — aur pao **simplified summary, regional audio, aur revision quiz**.")
 
-# Sample texts for instant testing
 SAMPLE_TEXT = (
     "Photosynthesis is the biological process by which green plants, algae, and certain bacteria "
     "transform light energy from the sun into chemical energy. During this process, plants capture "
@@ -211,7 +254,6 @@ with col_input:
     )
     st.session_state.input_text = input_text
 
-    # Word count stats
     word_count = len(input_text.split()) if input_text.strip() else 0
     st.caption(f"📊 Word Count: **{word_count} words** | Est. Reading Time: **{max(1, word_count // 150)} min**")
 
@@ -231,12 +273,11 @@ if process_btn:
             
             try:
                 if lang_code == "hinglish":
-                    final_summary = convert_to_hinglish(eng_summary)
+                    final_summary, hindi_audio_text = convert_to_hinglish(eng_summary)
                     tts_lang = "hi"
-                    # Audio ke liye Devanagari Hindi zyada natural bolti hai
-                    tts_text = GoogleTranslator(source='auto', target='hi').translate(eng_summary)
+                    tts_text = hindi_audio_text
                 elif lang_code != "en":
-                    final_summary = GoogleTranslator(source='auto', target=lang_code).translate(eng_summary)
+                    final_summary = robust_translate(eng_summary, lang_code)
                     tts_lang = lang_code
                     tts_text = final_summary
                 else:
@@ -244,7 +285,7 @@ if process_btn:
                     tts_lang = "en"
                     tts_text = eng_summary
             except Exception as e:
-                st.error(f"Translation me issue aaya: {e}. Showing English output.")
+                st.warning("Primary translator busy tha, showing English summary.")
                 final_summary = eng_summary
                 tts_lang = "en"
                 tts_text = eng_summary
@@ -255,77 +296,4 @@ if process_btn:
                 tts = gTTS(text=tts_text, lang=tts_lang, slow=slow_audio)
                 tts.write_to_fp(audio_buffer)
                 audio_buffer.seek(0)
-                audio_data = audio_buffer.getvalue()
-            except Exception:
-                audio_data = None
-
-            quizzes = generate_quiz_questions(eng_summary)
-            
-            # Save in session state so buttons don't wipe output
-            st.session_state.results = {
-                "lang_label": lang_label,
-                "final_summary": final_summary,
-                "eng_summary": eng_summary,
-                "audio_data": audio_data,
-                "quizzes": quizzes
-            }
-            status.update(label="✅ Notes Ready!", state="complete", expanded=False)
-
-# ---------------- RIGHT COLUMN (OUTPUT) ----------------
-with col_output:
-    st.subheader("📖 2. Simplified Study Kit")
-    
-    if st.session_state.results:
-        res = st.session_state.results
-        
-        tab1, tab2, tab3 = st.tabs([
-            f"🗣️ {res['lang_label']}",
-            "🇬🇧 English Summary",
-            "📝 Practice Quiz"
-        ])
-        
-        with tab1:
-            st.markdown(f"<div class='summary-box'>{res['final_summary']}</div>", unsafe_allow_html=True)
-            
-            # Bullet points breakdown
-            st.markdown("**📌 Key Takeaways:**")
-            for pt in [s.strip() for s in res['final_summary'].split(".") if len(s.strip()) > 5]:
-                st.markdown(f"- {pt}.")
-                
-            if res["audio_data"]:
-                st.markdown("### 🎧 Listen to Audio Lesson")
-                st.audio(res["audio_data"], format="audio/mp3")
-                
-            dl_col1, dl_col2 = st.columns(2)
-            with dl_col1:
-                st.download_button(
-                    "📄 Download Notes (.txt)",
-                    data=res["final_summary"],
-                    file_name="study_summary.txt",
-                    mime="text/plain",
-                    use_container_width=True
-                )
-            with dl_col2:
-                if res["audio_data"]:
-                    st.download_button(
-                        "🎵 Download Audio (.mp3)",
-                        data=res["audio_data"],
-                        file_name="audio_lesson.mp3",
-                        mime="audio/mp3",
-                        use_container_width=True
-                    )
-                    
-        with tab2:
-            st.markdown(f"<div class='summary-box'>{res['eng_summary']}</div>", unsafe_allow_html=True)
-            
-        with tab3:
-            st.write("Summary padhne ke baad khud ko test karo:")
-            if res["quizzes"]:
-                for idx, q in enumerate(res["quizzes"], 1):
-                    st.markdown(f"<div class='quiz-card'><b>Q{idx}:</b> {q['question']}</div>", unsafe_allow_html=True)
-                    with st.expander(f"👀 Show Answer {idx}"):
-                        st.success(f"**Correct Answer:** {q['answer']}")
-            else:
-                st.info("Quiz banane ke liye thoda aur lamba paragraph paste karo.")
-    else:
-        st.info("👈 Left side me apna chapter paste karo ya **'Load Sample Science Note'** par click karke dekho!")
+                audio_data = audio
