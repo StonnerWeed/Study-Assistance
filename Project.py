@@ -16,7 +16,7 @@ try:
 except ImportError:
     HAS_INDIC = False
 
-st.set_page_config(page_title="Vernacular Study Assistant", page_icon="🎓", layout="wide")
+st.set_page_config(page_title="Native Study Assistant", page_icon="🎓", layout="wide")
 
 st.markdown("""
     <style>
