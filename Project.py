@@ -137,8 +137,8 @@ with st.sidebar:
     summary_length = st.select_slider("📏 Summary Detail Level:", options=["Short", "Medium", "Detailed"], value="Medium")
     slow_audio = st.checkbox("🐢 Slow Audio Speed", value=False)
 
-st.title("🎓 Vernacular Study Assistant")
-st.write("Complex English chapters ya notes paste karo — aur pao **simplified summary, regional audio, aur revision quiz**.")
+st.title("🎓 Native Study Assistant")
+st.write("Complex English chapters ya notes paste karo — aur pao **simplified summary, native audio, aur revision quiz**.")
 
 SAMPLE_TEXT = (
     "Photosynthesis is the biological process by which green plants, algae, and certain bacteria "
